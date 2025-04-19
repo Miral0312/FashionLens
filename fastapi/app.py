@@ -1,76 +1,71 @@
 from fastapi import FastAPI, UploadFile, File, Form
+from fastapi.middleware.cors import CORSMiddleware
 import os
 import shutil
 import zipfile
 import patoolib
 from ultralytics import YOLO
-from typing import List, Dict
-import uvicorn
-from PIL import Image
 import joblib
-import numpy as np 
-import json
+import numpy as np
+from PIL import Image
+from typing import List, Dict
 from tensorflow.keras.applications.resnet50 import preprocess_input
 from tensorflow.keras.models import Model
 from tensorflow.keras.applications import ResNet50
+from tensorflow.keras.preprocessing import image as keras_image
+from tensorflow.keras.layers import GlobalMaxPooling2D
+from sklearn.neighbors import NearestNeighbors
+from numpy.linalg import norm
+import base64
 import cv2
+import pickle
+import tensorflow as tf
 
 app = FastAPI()
-from fastapi.middleware.cors import CORSMiddleware
 
-app.add_middleware( 
-    CORSMiddleware, 
-    allow_origins=["*"],  # Frontend origin
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], 
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-
 BASE_UPLOAD_FOLDER = "uploads"
 BASE_PREDICTIONS_FOLDER = "predictions"
-
-# Load YOLO models
-garment_model = YOLO(r"models/best_garment.pt")
-color_model = YOLO(r"models/best_color.pt")
-pattern_model = YOLO(r"models/best_pattern.pt")
-
-# Load textile classification models
-model_path = "models/fabric_classifier_resnet50.pkl"
-scaler_path = "models/scaler_resnet50.pkl"
-pca_path = "models/pca_resnet50.pkl"
-class_names_path = "models/class_names.npy"
-
-classifier = joblib.load(model_path)
-scaler = joblib.load(scaler_path)
-pca = joblib.load(pca_path)
-class_names = np.load(class_names_path, allow_pickle=True)
-
-# Allowed image extensions
 IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.bmp', '.gif', '.tiff']
 
-# 🛠️ Helper Functions
+# ========== Load Models ==========
+garment_model = YOLO("models/best_garment.pt")
+color_model = YOLO("models/best_color.pt")
+pattern_model = YOLO("models/best_pattern.pt")
+
+classifier = joblib.load("models/fabric_classifier_resnet50.pkl")
+scaler = joblib.load("models/scaler_resnet50.pkl")
+pca = joblib.load("models/pca_resnet50.pkl")
+class_names = np.load("models/class_names.npy", allow_pickle=True)
+
+base_model = ResNet50(weights='imagenet', include_top=False, input_shape=(224, 224, 3))
+textile_model = Model(inputs=base_model.input, outputs=base_model.output)
+
+feature_model = tf.keras.Sequential([ResNet50(weights='imagenet', include_top=False, input_shape=(224, 224, 3)), GlobalMaxPooling2D()])
+feature_model.trainable = False
+
+feature_list = np.array(pickle.load(open('./models/embeddings.pkl', 'rb')))
+filenames = pickle.load(open('./models/filenames.pkl', 'rb')) 
+
+# ========== Helper Functions ==========
+
 def setup_user_folders(user_id: str):
-    """Creates user-specific folders, deleting old ones if they exist."""
-    user_upload_folder = os.path.join(BASE_UPLOAD_FOLDER, user_id)
-    user_prediction_folder = os.path.join(BASE_PREDICTIONS_FOLDER, user_id)
-
-    # Remove existing folders
-    if os.path.exists(user_upload_folder):
-        shutil.rmtree(user_upload_folder)
-    if os.path.exists(user_prediction_folder):
-        shutil.rmtree(user_prediction_folder)
-
-    # Create fresh folders
-    os.makedirs(user_upload_folder, exist_ok=True)
-    os.makedirs(user_prediction_folder, exist_ok=True)
-
-    return user_upload_folder, user_prediction_folder
+    upload_path = os.path.join(BASE_UPLOAD_FOLDER, user_id)
+    pred_path = os.path.join(BASE_PREDICTIONS_FOLDER, user_id)
+    for path in [upload_path, pred_path]:
+        if os.path.exists(path): shutil.rmtree(path)
+        os.makedirs(path, exist_ok=True)
+    return upload_path, pred_path
 
 def extract_archive(file_path: str, extract_to: str):
-    """Extracts ZIP or RAR files to the given directory."""
     os.makedirs(extract_to, exist_ok=True)
-
     if file_path.endswith(".zip"):
         with zipfile.ZipFile(file_path, "r") as zip_ref:
             zip_ref.extractall(extract_to)
@@ -80,115 +75,110 @@ def extract_archive(file_path: str, extract_to: str):
         raise ValueError("Unsupported archive format")
 
 def get_images_from_folder(folder: str) -> List[str]:
-    """Returns a list of image file paths in the given folder."""
-    return [
-        os.path.join(folder, file)
-        for file in os.listdir(folder)
-        if os.path.splitext(file)[1].lower() in IMAGE_EXTENSIONS
-    ]
+    return [os.path.join(folder, f) for f in os.listdir(folder) if os.path.splitext(f)[1].lower() in IMAGE_EXTENSIONS]
 
-def process_images(image_paths: List[str], model, model_type: str, prediction_folder: str) -> Dict[str, int]:
-    """Processes a list of images with the given model and saves the predictions."""
+def process_images(image_paths: List[str], model, model_type: str, pred_folder: str) -> Dict[str, int]:
     results_data = {}
-
     for img_path in image_paths:
         result = model(img_path)[0]
-
-        # Save the prediction image
-        prediction_path = os.path.join(prediction_folder, f"{model_type}_{os.path.basename(img_path)}")
-        result.save(prediction_path)  # 🔥 Fix: Ensure the predicted image is saved
-        print(f"Saved {model_type} prediction at: {prediction_path}")
-
-        # Process results
+        pred_path = os.path.join(pred_folder, f"{model_type}_{os.path.basename(img_path)}")
+        result.save(pred_path)
         for obj in result.boxes.data:
             category = result.names[int(obj[5])]
             results_data[category] = results_data.get(category, 0) + 1
-
     return results_data
 
-
-base_model = ResNet50(weights='imagenet', include_top=False, input_shape=(224, 224, 3))
-model = Model(inputs=base_model.input, outputs=base_model.output)
-
-# Then update your function
 def process_textile_image(image_path: str):
-    """Processes a single image and predicts the fabric type."""
     try:
-        image = cv2.imread(image_path)
-        if image is None:
-            return None
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        image = cv2.resize(image, (224, 224))
-        image = preprocess_input(np.array([image]))
-        
-        # ✅ Extract features with Global Average Pooling
-        features = model.predict(image)
-        features = features.mean(axis=(1, 2))  # This gives (1, 2048) shape
-        
-        # Scaling and PCA
+        img = cv2.imread(image_path)
+        if img is None: return None
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        img = cv2.resize(img, (224, 224))
+        img = preprocess_input(np.array([img]))
+        features = textile_model.predict(img)
+        features = features.mean(axis=(1, 2))
         features = scaler.transform(features)
         features = pca.transform(features)
-        
-        # Prediction
         prediction = classifier.predict(features)
         return class_names[prediction[0]]
     except Exception as e:
-        print(f"Error in textile processing: {e}")
+        print(f"Textile processing error: {e}")
         return None
 
-    
+def extract_features(img_path):
+    img = keras_image.load_img(img_path, target_size=(224, 224))
+    img_array = keras_image.img_to_array(img)
+    expanded = np.expand_dims(img_array, axis=0)
+    preprocessed = preprocess_input(expanded)
+    result = feature_model.predict(preprocessed).flatten()
+    return result / norm(result)
+
+def get_recommendations(features):
+    neighbors = NearestNeighbors(n_neighbors=6, algorithm='brute', metric='euclidean')
+    neighbors.fit(feature_list)
+    _, indices = neighbors.kneighbors([features])
+    return indices
+
+# ========== API Endpoints ==========
+
 @app.post("/predict/")
 async def predict(user_id: str = Form(...), file: UploadFile = File(...), model_type: str = Form(...)):
-    """Handles file uploads and runs predictions."""
     user_upload_folder, user_prediction_folder = setup_user_folders(user_id)
-
-    # Save the uploaded file
     file_path = os.path.join(user_upload_folder, file.filename)
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
-    # Extract files if necessary
     extracted_folder = os.path.join(user_upload_folder, "extracted")
+    image_paths = [file_path]
     if file.filename.endswith((".zip", ".rar")):
         extract_archive(file_path, extracted_folder)
         image_paths = get_images_from_folder(extracted_folder)
-    else:
-        image_paths = [file_path]
 
-    # Run garment, color, and pattern predictions
     results = {}
+
     if model_type == "all_in_one":
-        # Garment Prediction
-        garment_results = process_images(image_paths, garment_model, "garment", user_prediction_folder)
-
-        # Use garment prediction image as input for color model
-        garment_images = get_images_from_folder(user_prediction_folder)
-        color_results = process_images(garment_images, color_model, "color", user_prediction_folder)
-
-        # Use color prediction image as input for pattern model
-        color_images = get_images_from_folder(user_prediction_folder)
-        pattern_results = process_images(color_images, pattern_model, "pattern", user_prediction_folder)
-
-        results.update({"garment": garment_results, "color": color_results, "pattern": pattern_results})
-
+        garment_res = process_images(image_paths, garment_model, "garment", user_prediction_folder)
+        color_res = process_images(get_images_from_folder(user_prediction_folder), color_model, "color", user_prediction_folder)
+        pattern_res = process_images(get_images_from_folder(user_prediction_folder), pattern_model, "pattern", user_prediction_folder)
+        results.update({"garment": garment_res, "color": color_res, "pattern": pattern_res})
     else:
-        if model_type == "garment":
+        if "garment" in model_type:
             results["garment"] = process_images(image_paths, garment_model, "garment", user_prediction_folder)
-        if model_type == "color":
+        if "color" in model_type:
             results["color"] = process_images(image_paths, color_model, "color", user_prediction_folder)
-        if model_type == "pattern":
+        if "pattern" in model_type:
             results["pattern"] = process_images(image_paths, pattern_model, "pattern", user_prediction_folder)
 
-    # Run textile classification if specified
     if "textile" in model_type:
         textile_results = {}
-        for image_path in image_paths:
-            fabric_type = process_textile_image(image_path)
-            if fabric_type:
-                textile_results[os.path.basename(image_path)] = fabric_type
+        for img_path in image_paths:
+            fabric = process_textile_image(img_path)
+            if fabric:
+                textile_results[os.path.basename(img_path)] = fabric
         results["textile"] = textile_results
 
     return {"user_id": user_id, "results": results}
 
+@app.post("/recommend-binary/")
+async def recommend_images(file: UploadFile = File(...)):
+    file_path = f"uploads/{file.filename}"
+    with open(file_path, "wb") as f:
+        f.write(await file.read())
+
+    try:
+        features = extract_features(file_path)
+        indices = get_recommendations(features)
+        recommended_images = []
+        for idx in indices[0]:
+            with open(filenames[idx], "rb") as img_file:
+                encoded = base64.b64encode(img_file.read()).decode('utf-8')
+                recommended_images.append(encoded)
+        os.remove(file_path)
+        return {"recommended_images": recommended_images}
+    except Exception as e:
+        return {"error": str(e)}
+
+# Run app
 if __name__ == "__main__":
+    import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

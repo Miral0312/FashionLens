@@ -3,6 +3,9 @@
 # dependencies
 /node_modules
 /models/best_garment.pt
+/models/embeddings.pkl
+/images
+/styles
 
 # next.js
 /.next/
