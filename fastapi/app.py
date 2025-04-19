@@ -7,8 +7,25 @@ from ultralytics import YOLO
 from typing import List, Dict
 import uvicorn
 from PIL import Image
+import joblib
+import numpy as np 
+import json
+from tensorflow.keras.applications.resnet50 import preprocess_input
+from tensorflow.keras.models import Model
+from tensorflow.keras.applications import ResNet50
+import cv2
 
 app = FastAPI()
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware( 
+    CORSMiddleware, 
+    allow_origins=["*"],  # Frontend origin
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 BASE_UPLOAD_FOLDER = "uploads"
 BASE_PREDICTIONS_FOLDER = "predictions"
@@ -18,9 +35,19 @@ garment_model = YOLO(r"models/best_garment.pt")
 color_model = YOLO(r"models/best_color.pt")
 pattern_model = YOLO(r"models/best_pattern.pt")
 
+# Load textile classification models
+model_path = "models/fabric_classifier_resnet50.pkl"
+scaler_path = "models/scaler_resnet50.pkl"
+pca_path = "models/pca_resnet50.pkl"
+class_names_path = "models/class_names.npy"
+
+classifier = joblib.load(model_path)
+scaler = joblib.load(scaler_path)
+pca = joblib.load(pca_path)
+class_names = np.load(class_names_path, allow_pickle=True)
+
 # Allowed image extensions
 IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.bmp', '.gif', '.tiff']
-
 
 # 🛠️ Helper Functions
 def setup_user_folders(user_id: str):
@@ -40,7 +67,6 @@ def setup_user_folders(user_id: str):
 
     return user_upload_folder, user_prediction_folder
 
-
 def extract_archive(file_path: str, extract_to: str):
     """Extracts ZIP or RAR files to the given directory."""
     os.makedirs(extract_to, exist_ok=True)
@@ -53,7 +79,6 @@ def extract_archive(file_path: str, extract_to: str):
     else:
         raise ValueError("Unsupported archive format")
 
-
 def get_images_from_folder(folder: str) -> List[str]:
     """Returns a list of image file paths in the given folder."""
     return [
@@ -61,7 +86,6 @@ def get_images_from_folder(folder: str) -> List[str]:
         for file in os.listdir(folder)
         if os.path.splitext(file)[1].lower() in IMAGE_EXTENSIONS
     ]
-
 
 def process_images(image_paths: List[str], model, model_type: str, prediction_folder: str) -> Dict[str, int]:
     """Processes a list of images with the given model and saves the predictions."""
@@ -83,6 +107,36 @@ def process_images(image_paths: List[str], model, model_type: str, prediction_fo
     return results_data
 
 
+base_model = ResNet50(weights='imagenet', include_top=False, input_shape=(224, 224, 3))
+model = Model(inputs=base_model.input, outputs=base_model.output)
+
+# Then update your function
+def process_textile_image(image_path: str):
+    """Processes a single image and predicts the fabric type."""
+    try:
+        image = cv2.imread(image_path)
+        if image is None:
+            return None
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        image = cv2.resize(image, (224, 224))
+        image = preprocess_input(np.array([image]))
+        
+        # ✅ Extract features with Global Average Pooling
+        features = model.predict(image)
+        features = features.mean(axis=(1, 2))  # This gives (1, 2048) shape
+        
+        # Scaling and PCA
+        features = scaler.transform(features)
+        features = pca.transform(features)
+        
+        # Prediction
+        prediction = classifier.predict(features)
+        return class_names[prediction[0]]
+    except Exception as e:
+        print(f"Error in textile processing: {e}")
+        return None
+
+    
 @app.post("/predict/")
 async def predict(user_id: str = Form(...), file: UploadFile = File(...), model_type: str = Form(...)):
     """Handles file uploads and runs predictions."""
@@ -101,7 +155,7 @@ async def predict(user_id: str = Form(...), file: UploadFile = File(...), model_
     else:
         image_paths = [file_path]
 
-    # Run predictions
+    # Run garment, color, and pattern predictions
     results = {}
     if model_type == "all_in_one":
         # Garment Prediction
@@ -125,8 +179,16 @@ async def predict(user_id: str = Form(...), file: UploadFile = File(...), model_
         if model_type == "pattern":
             results["pattern"] = process_images(image_paths, pattern_model, "pattern", user_prediction_folder)
 
+    # Run textile classification if specified
+    if "textile" in model_type:
+        textile_results = {}
+        for image_path in image_paths:
+            fabric_type = process_textile_image(image_path)
+            if fabric_type:
+                textile_results[os.path.basename(image_path)] = fabric_type
+        results["textile"] = textile_results
+
     return {"user_id": user_id, "results": results}
 
-
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000) 
+    uvicorn.run(app, host="0.0.0.0", port=8000)
