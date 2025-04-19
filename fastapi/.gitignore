@@ -2,7 +2,7 @@
 
 # dependencies
 /node_modules
-/models
+/models/best_garment.pt
 
 # next.js
 /.next/
