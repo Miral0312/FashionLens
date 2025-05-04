@@ -1,28 +1,28 @@
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-import os
-import shutil
-import zipfile
+import os, shutil, zipfile, time, base64, requests
 import patoolib
-from ultralytics import YOLO
-import joblib
-import numpy as np
-from PIL import Image
 from typing import List, Dict
-from tensorflow.keras.applications.resnet50 import preprocess_input
+from ultralytics import YOLO
+from PIL import Image
+import numpy as np
+import cv2
+import joblib, pickle
+import tensorflow as tf
+from tensorflow.keras.applications.resnet50 import preprocess_input, ResNet50
 from tensorflow.keras.models import Model
-from tensorflow.keras.applications import ResNet50
 from tensorflow.keras.preprocessing import image as keras_image
 from tensorflow.keras.layers import GlobalMaxPooling2D
-from sklearn.neighbors import NearestNeighbors
 from numpy.linalg import norm
-import base64
-import cv2
-import pickle
-import tensorflow as tf
+from sklearn.neighbors import NearestNeighbors
+import pandas as pd
+from neuralprophet import NeuralProphet
+from pytrends.request import TrendReq
 
+# ========== Initialize FastAPI App ==========
 app = FastAPI()
 
+# ========== CORS Configuration ==========
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], 
@@ -31,9 +31,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ========== Constants ==========
 BASE_UPLOAD_FOLDER = "uploads"
 BASE_PREDICTIONS_FOLDER = "predictions"
 IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.bmp', '.gif', '.tiff']
+TIMEFRAME = "today 5-y"
 
 # ========== Load Models ==========
 garment_model = YOLO("models/best_garment.pt")
@@ -55,7 +57,6 @@ feature_list = np.array(pickle.load(open('./models/embeddings.pkl', 'rb')))
 filenames = pickle.load(open('./models/filenames.pkl', 'rb')) 
 
 # ========== Helper Functions ==========
-
 def setup_user_folders(user_id: str):
     upload_path = os.path.join(BASE_UPLOAD_FOLDER, user_id)
     pred_path = os.path.join(BASE_PREDICTIONS_FOLDER, user_id)
@@ -119,6 +120,44 @@ def get_recommendations(features):
     _, indices = neighbors.kneighbors([features])
     return indices
 
+def fetch_trends_data(keywords, retries=3, backoff_factor=2):
+    pytrends = TrendReq()
+    trends_data = {}  
+    for item in keywords:
+        attempt = 0
+        while attempt < retries:
+            try:
+                pytrends.build_payload([item], timeframe=TIMEFRAME)
+                data = pytrends.interest_over_time()
+                if data.empty:
+                    raise HTTPException(status_code=404, detail=f"No data found for '{item}'")
+                trends_data[item] = data[item]
+                break
+            except requests.exceptions.Timeout:
+                attempt += 1
+                time.sleep(backoff_factor ** attempt)
+            except Exception as e:
+                print(f"Error fetching data for {item}: {e}")
+                break
+    if not trends_data:
+        raise HTTPException(status_code=404, detail="No data fetched from Google Trends.")
+    df = pd.DataFrame(trends_data)
+    return df.dropna()
+
+def forecast_trends(data, periods=365):
+    df = data.reset_index()
+    df.columns = ['ds', 'y']
+    model = NeuralProphet(yearly_seasonality=True, learning_rate=0.1)
+    model.fit(df, freq='D', epochs=100)
+    future = model.make_future_dataframe(df, periods=periods)
+    forecast = model.predict(future)
+    yearly_seasonality = model.predict_seasonal_components(future)
+    yearly_seasonality['month'] = yearly_seasonality['ds'].dt.month
+    monthly_avg = yearly_seasonality.groupby('month')['yearly'].mean()
+    peak_month = int(monthly_avg.idxmax())
+    low_month = int(monthly_avg.idxmin())
+    return forecast, peak_month, low_month
+
 # ========== API Endpoints ==========
 
 @app.post("/predict/")
@@ -127,7 +166,6 @@ async def predict(user_id: str = Form(...), file: UploadFile = File(...), model_
     file_path = os.path.join(user_upload_folder, file.filename)
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
-
     extracted_folder = os.path.join(user_upload_folder, "extracted")
     image_paths = [file_path]
     if file.filename.endswith((".zip", ".rar")):
@@ -135,7 +173,6 @@ async def predict(user_id: str = Form(...), file: UploadFile = File(...), model_
         image_paths = get_images_from_folder(extracted_folder)
 
     results = {}
-
     if model_type == "all_in_one":
         garment_res = process_images(image_paths, garment_model, "garment", user_prediction_folder)
         color_res = process_images(get_images_from_folder(user_prediction_folder), color_model, "color", user_prediction_folder)
@@ -164,7 +201,6 @@ async def recommend_images(file: UploadFile = File(...)):
     file_path = f"uploads/{file.filename}"
     with open(file_path, "wb") as f:
         f.write(await file.read())
-
     try:
         features = extract_features(file_path)
         indices = get_recommendations(features)
@@ -178,7 +214,29 @@ async def recommend_images(file: UploadFile = File(...)):
     except Exception as e:
         return {"error": str(e)}
 
-# Run app
+@app.get("/fetch_trends/{keyword}")
+async def get_trends(keyword: str):
+    try:
+        trends_data = fetch_trends_data([keyword])
+        forecast, peak_month, low_month = forecast_trends(trends_data[keyword])
+        response = {
+            "keyword": keyword,
+            "historical_data": {
+                "dates": trends_data.index.strftime('%Y-%m-%d').tolist(),
+                "values": trends_data[keyword].tolist()
+            },
+            "forecast_data": {
+                "dates": forecast['ds'].dt.strftime('%Y-%m-%d').tolist(),
+                "values": forecast['yhat1'].tolist()
+            },
+            "peak_month": peak_month,
+            "low_month": low_month
+        }
+        return response
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ========== Run App ==========
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
