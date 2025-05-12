@@ -15,14 +15,14 @@ export default function Navbar() {
           <Link href="#" className="text-sm">
             SERVICES
           </Link>
-          <Link href="#" className="text-sm">
+          <Link href="https://www.vogue.in/topics/met-gala" className="text-sm">
             EVENTS
           </Link>
         </div>
-        <div className="flex items-center gap-4">
+        {/* <div className="flex items-center gap-4">
           <Button variant="outline">Sign In</Button>
           <Button>Try Now</Button>
-        </div>
+        </div> */}
       </div>
     </nav>
   )

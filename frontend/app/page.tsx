@@ -219,12 +219,12 @@ export default function Home() {
           <p className="mt-4 text-lg md:text-xl">
             Empower Your Fashion Decisions with Data-Driven Insights and AI Creativity
           </p>
-          <Button className="mt-8 bg-white text-black hover:bg-gray-100">Try it now</Button>
+          {/* <Button className="mt-8 bg-white text-black hover:bg-gray-100">Try it now</Button> */}
         </div>
       </section>
 
       {/* Fashion Trend Section */}
-      <section className="mx-auto max-w-7xl px-4 py-16">
+      {/* <section className="mx-auto max-w-7xl px-4 py-16">
         <h2 className="font-playfair text-3xl">
           FASHION TREND <span className="italic text-gray-500">forecasting</span>
         </h2>
@@ -237,7 +237,7 @@ export default function Home() {
             Read More →
           </Button>
         </Link>
-      </section>
+      </section> */}
 
       {/* Upcoming Trends Grid */}
       <section className="mx-auto grid max-w-7xl gap-8 px-4 py-16 md:grid-cols-2">
@@ -269,7 +269,7 @@ export default function Home() {
       <section className="mx-auto grid max-w-7xl gap-8 px-4 py-16 md:grid-cols-2">
         <div className="relative h-[500px]">
           <Image
-            src="https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcRpAYIhUH334gAAjg8jg5g85xACl4v2_IqXlQ&s"
+            src="https://images.vogue.it/Photovogue/3c8b82c0-2f15-11f0-ae7d-5f3430542997_admin-thumbnail.jpg"
             alt="Design Direction"
             fill
             className="rounded-lg object-cover"
@@ -326,7 +326,7 @@ export default function Home() {
       <section className="mx-auto grid max-w-7xl gap-8 px-4 py-16 md:grid-cols-2">
         <div className="relative h-[500px]">
           <Image
-            src="https://lh3.googleusercontent.com/R6B6ECr1LnxoBqJkwYxK5pDOmiEe0Ae51mIhyPpP5xYSZKCpb-OBvhf2JKqQwhKuEM8yLqvFaQY-pjcrXev6cskFojsydHPIJxfMGfjXQbwVX0Q1txdaRBFcHPm90fwdsgBqj3qP"
+            src="https://images.vogue.it/Photovogue/859b25f0-2ef8-11f0-a755-c3df104fb96f_admin-thumbnail.jpg"
             alt="Recommendation System"
             fill
             className="rounded-lg object-cover"
@@ -404,7 +404,7 @@ export default function Home() {
             <div className="mt-8 grid gap-4 md:grid-cols-2">
               <div className="relative h-[400px]">
                 <Image
-                  src="https://c2fashionstudio.com/wp-content/uploads/2024/01/Fashion-Trend-Spring-Summer-2025-Moodboard_Sunset-Coral-1086x1536.jpg"
+                  src="https://cdn.shopify.com/s/files/1/0746/5202/5118/files/cottagecore-aesthetic-collage.jpg?v=1698108216"
                   alt="Trend 1"
                   fill
                   className="rounded-lg object-cover"
@@ -412,7 +412,7 @@ export default function Home() {
               </div>
               <div className="relative h-[400px]">
                 <Image
-                  src="https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQ-4LOsVwbknRwSgYVzKSvjJA_EuwPPgJUYvxmuuwqycvpJ5EgpCNBawgJphInRIaWmQI4&usqp=CAU"
+                  src="https://cdn.shopify.com/s/files/1/0746/5202/5118/files/tomato-girl-aesthetic-collage.jpg?v=1698694948"
                   alt="Trend 2"
                   fill
                   className="rounded-lg object-cover"
